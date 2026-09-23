@@ -29,11 +29,17 @@ interface Particle {
   size: number;
 }
 
+type GameState = 'menu' | 'playing' | 'gameover';
+
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover'>('menu');
+  const [gameState, setGameState] = useState<GameState>('menu');
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
+  const [time, setTime] = useState(0);
+  const gameStateRef = useRef<GameState>('menu');
+  const animFrameRef = useRef<number>(0);
+
   const gameRef = useRef({
     player: { x: 0, y: 0, size: 16, speed: 4 },
     enemies: [] as Entity[],
@@ -45,8 +51,8 @@ function App() {
     time: 0,
     spawnTimer: 0,
     shootTimer: 0,
-    animFrame: 0,
     lastTime: 0,
+    initialized: false,
   });
 
   const startGame = useCallback(() => {
@@ -63,7 +69,16 @@ function App() {
     game.spawnTimer = 0;
     game.shootTimer = 0;
     setScore(0);
+    setTime(0);
+    gameStateRef.current = 'playing';
     setGameState('playing');
+  }, []);
+
+  const endGame = useCallback(() => {
+    const game = gameRef.current;
+    gameStateRef.current = 'gameover';
+    setGameState('gameover');
+    setHighScore(prev => Math.max(prev, game.score));
   }, []);
 
   useEffect(() => {
@@ -106,12 +121,11 @@ function App() {
       const game = gameRef.current;
       const types: Array<'circle' | 'square' | 'triangle'> = ['circle', 'square', 'triangle'];
       const type = types[Math.floor(Math.random() * types.length)];
-      
-      // Spawn from edges
+
       const side = Math.floor(Math.random() * 4);
       let x = 0, y = 0;
       const margin = 50;
-      
+
       switch (side) {
         case 0: x = Math.random() * canvas.width; y = -margin; break;
         case 1: x = canvas.width + margin; y = Math.random() * canvas.height; break;
@@ -120,7 +134,7 @@ function App() {
       }
 
       const difficultyMult = 1 + game.time / 30;
-      const baseSpeed = 1 + Math.random() * 0.5;
+      const baseSpeed = 1 + Math.random() * 0.8;
       const size = type === 'square' ? 14 : type === 'triangle' ? 16 : 12;
       const hp = type === 'square' ? 2 : type === 'triangle' ? 3 : 1;
 
@@ -129,11 +143,11 @@ function App() {
         size,
         type,
         hp: Math.ceil(hp * (1 + game.time / 60)),
-        speed: baseSpeed * Math.min(difficultyMult, 3),
+        speed: baseSpeed * Math.min(difficultyMult, 3.5),
       });
     };
 
-    const createParticles = (x: number, y: number, count: number, color: string) => {
+    const createParticles = (x: number, y: number, count: number) => {
       const game = gameRef.current;
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * Math.PI * 2;
@@ -159,15 +173,35 @@ function App() {
 
     const gameLoop = (timestamp: number) => {
       const game = gameRef.current;
-      
+      const currentState = gameStateRef.current;
+
       if (!game.lastTime) game.lastTime = timestamp;
-      const delta = Math.min((timestamp - game.lastTime) / 16.67, 3);
+      const rawDelta = (timestamp - game.lastTime) / 16.67;
+      const delta = Math.min(rawDelta, 3);
       game.lastTime = timestamp;
 
+      // Clear
       ctx.fillStyle = '#f5f5f0';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      if (gameState === 'playing') {
+      // Draw grid (subtle)
+      ctx.strokeStyle = 'rgba(0,0,0,0.04)';
+      ctx.lineWidth = 1;
+      const gridSize = 60;
+      for (let gx = 0; gx < canvas.width; gx += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, canvas.height);
+        ctx.stroke();
+      }
+      for (let gy = 0; gy < canvas.height; gy += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(canvas.width, gy);
+        ctx.stroke();
+      }
+
+      if (currentState === 'playing') {
         game.time += delta / 60;
 
         // Player movement
@@ -201,11 +235,11 @@ function App() {
         }
 
         // Spawn enemies
-        const spawnRate = Math.max(10, 60 - game.time * 2);
+        const spawnRate = Math.max(15, 70 - game.time * 2);
         game.spawnTimer += delta;
         if (game.spawnTimer >= spawnRate) {
           game.spawnTimer = 0;
-          const numToSpawn = Math.min(1 + Math.floor(game.time / 20), 4);
+          const numToSpawn = Math.min(1 + Math.floor(game.time / 15), 5);
           for (let i = 0; i < numToSpawn; i++) {
             spawnEnemy();
           }
@@ -244,7 +278,7 @@ function App() {
               if (e.hp <= 0) {
                 game.score += e.type === 'triangle' ? 3 : e.type === 'square' ? 2 : 1;
                 setScore(game.score);
-                createParticles(e.x, e.y, 8, '#333');
+                createParticles(e.x, e.y, 8);
                 return false;
               }
             }
@@ -254,27 +288,33 @@ function App() {
         });
 
         // Player-enemy collision
-        game.enemies.forEach(e => {
+        for (let i = 0; i < game.enemies.length; i++) {
+          const e = game.enemies[i];
           const dx = game.player.x - e.x;
           const dy = game.player.y - e.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < game.player.size + e.size - 4) {
-            setGameState('gameover');
-            setHighScore(prev => Math.max(prev, game.score));
-            createParticles(game.player.x, game.player.y, 20, '#000');
+            createParticles(game.player.x, game.player.y, 20);
+            endGame();
+            break;
           }
-        });
+        }
 
-        // Update particles
-        game.particles = game.particles.filter(p => {
-          p.x += p.vx * delta;
-          p.y += p.vy * delta;
-          p.vx *= 0.95;
-          p.vy *= 0.95;
-          p.life -= delta;
-          return p.life > 0;
-        });
+        // Update time display
+        if (Math.floor(game.time) !== Math.floor(game.time - delta / 60)) {
+          setTime(Math.floor(game.time));
+        }
       }
+
+      // Update particles (always)
+      game.particles = game.particles.filter(p => {
+        p.x += p.vx * delta;
+        p.y += p.vy * delta;
+        p.vx *= 0.95;
+        p.vy *= 0.95;
+        p.life -= delta;
+        return p.life > 0;
+      });
 
       // Draw particles
       game.particles.forEach(p => {
@@ -295,23 +335,28 @@ function App() {
 
       // Draw enemies
       game.enemies.forEach(e => {
-        ctx.fillStyle = e.type === 'circle' ? '#e74c3c' : e.type === 'square' ? '#e67e22' : '#9b59b6';
-        ctx.strokeStyle = 'rgba(0,0,0,0.2)';
         ctx.lineWidth = 1.5;
-        
+
         if (e.type === 'circle') {
+          ctx.fillStyle = '#e74c3c';
+          ctx.strokeStyle = 'rgba(0,0,0,0.2)';
           ctx.beginPath();
           ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
         } else if (e.type === 'square') {
+          ctx.fillStyle = '#e67e22';
+          ctx.strokeStyle = 'rgba(0,0,0,0.2)';
           ctx.save();
           ctx.translate(e.x, e.y);
-          ctx.rotate(Math.atan2(game.player.y - e.y, game.player.x - e.x));
+          const angle = Math.atan2(game.player.y - e.y, game.player.x - e.x);
+          ctx.rotate(angle);
           ctx.fillRect(-e.size, -e.size, e.size * 2, e.size * 2);
           ctx.strokeRect(-e.size, -e.size, e.size * 2, e.size * 2);
           ctx.restore();
         } else {
+          ctx.fillStyle = '#9b59b6';
+          ctx.strokeStyle = 'rgba(0,0,0,0.2)';
           const angle = Math.atan2(game.player.y - e.y, game.player.x - e.x) - Math.PI / 2;
           ctx.save();
           ctx.translate(e.x, e.y);
@@ -324,55 +369,43 @@ function App() {
       });
 
       // Draw player
-      if (gameState === 'playing') {
+      if (currentState === 'playing') {
         ctx.fillStyle = '#1a1a1a';
         ctx.beginPath();
         ctx.arc(game.player.x, game.player.y, game.player.size, 0, Math.PI * 2);
         ctx.fill();
-        
-        // Player outline
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Aim line
+        // Aim indicator
         if (game.mouse.down) {
           const angle = Math.atan2(game.mouse.y - game.player.y, game.mouse.x - game.player.x);
-          ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+          ctx.strokeStyle = 'rgba(0,0,0,0.2)';
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.beginPath();
-          ctx.moveTo(game.player.x + Math.cos(angle) * game.player.size, game.player.y + Math.sin(angle) * game.player.size);
-          ctx.lineTo(game.player.x + Math.cos(angle) * 60, game.player.y + Math.sin(angle) * 60);
+          ctx.moveTo(
+            game.player.x + Math.cos(angle) * game.player.size,
+            game.player.y + Math.sin(angle) * game.player.size
+          );
+          ctx.lineTo(
+            game.player.x + Math.cos(angle) * 60,
+            game.player.y + Math.sin(angle) * 60
+          );
           ctx.stroke();
           ctx.setLineDash([]);
         }
       }
 
-      // Draw grid (subtle)
-      ctx.strokeStyle = 'rgba(0,0,0,0.03)';
-      ctx.lineWidth = 1;
-      const gridSize = 60;
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
-      for (let y = 0; y < canvas.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-      }
-
-      game.animFrame = requestAnimationFrame(gameLoop);
+      animFrameRef.current = requestAnimationFrame(gameLoop);
     };
 
-    gameRef.current.animFrame = requestAnimationFrame(gameLoop);
+    animFrameRef.current = requestAnimationFrame(gameLoop);
 
     return () => {
-      cancelAnimationFrame(gameRef.current.animFrame);
+      cancelAnimationFrame(animFrameRef.current);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -380,7 +413,7 @@ function App() {
       canvas.removeEventListener('mousedown', handleMouseDown);
       canvas.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [gameState]);
+  }, [endGame]);
 
   return (
     <div className="w-full h-screen overflow-hidden relative" style={{ background: '#f5f5f0' }}>
@@ -389,13 +422,13 @@ function App() {
         className="block w-full h-full"
         style={{ cursor: gameState === 'playing' ? 'crosshair' : 'default' }}
       />
-      
+
       {/* HUD */}
       {gameState === 'playing' && (
         <div className="absolute top-6 left-6 font-mono text-sm" style={{ color: '#333' }}>
           <div className="text-2xl font-bold tracking-tight">{score}</div>
           <div className="text-xs opacity-50 mt-1">
-            TIME: {Math.floor(gameRef.current.time)}s
+            TIME: {time}s
           </div>
         </div>
       )}
@@ -408,14 +441,14 @@ function App() {
               SURVIVAL
             </h1>
             <p className="text-sm opacity-40 mb-12 font-mono tracking-wide" style={{ color: '#333' }}>
-              A minimalist shooter
+              a minimalist shooter
             </p>
-            
+
             <button
               onClick={startGame}
               className="px-8 py-3 text-sm font-mono tracking-wider border-2 transition-all duration-200 hover:scale-105"
-              style={{ 
-                color: '#1a1a1a', 
+              style={{
+                color: '#1a1a1a',
                 borderColor: '#1a1a1a',
                 background: 'transparent',
               }}
@@ -447,12 +480,12 @@ function App() {
                 BEST: {highScore}
               </div>
             )}
-            
+
             <button
               onClick={startGame}
               className="px-8 py-3 text-sm font-mono tracking-wider border-2 transition-all duration-200 hover:scale-105"
-              style={{ 
-                color: '#1a1a1a', 
+              style={{
+                color: '#1a1a1a',
                 borderColor: '#1a1a1a',
                 background: 'transparent',
               }}
